@@ -69,6 +69,7 @@ OpCapability Shader
 %workgroup = OpConstant %u32 2
 %subgroup = OpConstant %u32 3
 %invocation = OpConstant %u32 4
+%queuefamily = OpConstant %u32 5
 
 %none = OpConstant %u32 0
 %acquire = OpConstant %u32 2
@@ -174,9 +175,7 @@ OpMemoryModel Physical32 OpenCL
 %acquire_release = OpConstant %u32 8
 %acquire_and_release = OpConstant %u32 6
 %sequentially_consistent = OpConstant %u32 16
-%acquire_release_uniform_workgroup = OpConstant %u32 328
-%acquire_and_release_uniform = OpConstant %u32 70
-%uniform = OpConstant %u32 64
+%acquire_release_workgroup = OpConstant %u32 264
 
 %named_barrier = OpTypeNamedBarrier
 
@@ -214,7 +213,7 @@ OpControlBarrier %workgroup %workgroup %acquire
 OpControlBarrier %workgroup %device %release
 OpControlBarrier %cross_device %cross_device %acquire_release
 OpControlBarrier %cross_device %cross_device %sequentially_consistent
-OpControlBarrier %cross_device %cross_device %acquire_release_uniform_workgroup
+OpControlBarrier %cross_device %cross_device %acquire_release_workgroup
 )";
 
   CompileSuccessfully(GenerateKernelCode(body), SPV_ENV_UNIVERSAL_1_1);
@@ -248,7 +247,7 @@ OpControlBarrier %workgroup %workgroup %acquire_release_uniform_workgroup
 
 TEST_F(ValidateBarriers, OpControlBarrierWebGPUSuccess) {
   const std::string body = R"(
-OpControlBarrier %workgroup %device %none
+OpControlBarrier %workgroup %queuefamily %none
 OpControlBarrier %workgroup %workgroup %acquire_release_uniform_workgroup
 )";
 
@@ -614,8 +613,8 @@ OpMemoryBarrier %device %uniform
 
 TEST_F(ValidateBarriers, OpMemoryBarrierKernelSuccess) {
   const std::string body = R"(
-OpMemoryBarrier %cross_device %acquire_release_uniform_workgroup
-OpMemoryBarrier %device %uniform
+OpMemoryBarrier %cross_device %acquire_release_workgroup
+OpMemoryBarrier %device %none
 )";
 
   CompileSuccessfully(GenerateKernelCode(body), SPV_ENV_UNIVERSAL_1_1);
@@ -803,7 +802,7 @@ TEST_F(ValidateBarriers, OpNamedBarrierInitializeU64SubgroupCount) {
 TEST_F(ValidateBarriers, OpMemoryNamedBarrierSuccess) {
   const std::string body = R"(
 %barrier = OpNamedBarrierInitialize %named_barrier %u32_4
-OpMemoryNamedBarrier %barrier %workgroup %acquire_release_uniform_workgroup
+OpMemoryNamedBarrier %barrier %workgroup %acquire_release_workgroup
 )";
 
   CompileSuccessfully(GenerateKernelCode(body), SPV_ENV_UNIVERSAL_1_1);
@@ -812,7 +811,7 @@ OpMemoryNamedBarrier %barrier %workgroup %acquire_release_uniform_workgroup
 
 TEST_F(ValidateBarriers, OpMemoryNamedBarrierNotNamedBarrier) {
   const std::string body = R"(
-OpMemoryNamedBarrier %u32_1 %workgroup %acquire_release_uniform_workgroup
+OpMemoryNamedBarrier %u32_1 %workgroup %acquire_release_workgroup
 )";
 
   CompileSuccessfully(GenerateKernelCode(body), SPV_ENV_UNIVERSAL_1_1);
@@ -826,7 +825,7 @@ OpMemoryNamedBarrier %u32_1 %workgroup %acquire_release_uniform_workgroup
 TEST_F(ValidateBarriers, OpMemoryNamedBarrierFloatMemoryScope) {
   const std::string body = R"(
 %barrier = OpNamedBarrierInitialize %named_barrier %u32_4
-OpMemoryNamedBarrier %barrier %f32_1 %acquire_release_uniform_workgroup
+OpMemoryNamedBarrier %barrier %f32_1 %acquire_release_workgroup
 )";
 
   CompileSuccessfully(GenerateKernelCode(body), SPV_ENV_UNIVERSAL_1_1);
@@ -856,7 +855,7 @@ OpMemoryNamedBarrier %barrier %workgroup %f32_0
 TEST_F(ValidateBarriers, OpMemoryNamedBarrierAcquireAndRelease) {
   const std::string body = R"(
 %barrier = OpNamedBarrierInitialize %named_barrier %u32_4
-OpMemoryNamedBarrier %barrier %workgroup %acquire_and_release_uniform
+OpMemoryNamedBarrier %barrier %workgroup %acquire_and_release
 )";
 
   CompileSuccessfully(GenerateKernelCode(body), SPV_ENV_UNIVERSAL_1_1);
@@ -875,7 +874,8 @@ OpMemoryBarrier %u32 %u32_0
 
   CompileSuccessfully(GenerateKernelCode(body));
   EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
-  EXPECT_THAT(getDiagnosticString(), HasSubstr("Operand 5 cannot be a type"));
+  EXPECT_THAT(getDiagnosticString(), HasSubstr("Operand 5[%uint] cannot be a "
+                                               "type"));
 }
 
 TEST_F(ValidateBarriers,
@@ -891,7 +891,7 @@ OpExecutionMode %1 OriginUpperLeft
 %3 = OpTypeInt 32 0
 %4 = OpConstant %3 16
 %5 = OpTypeFunction %2
-%6 = OpConstant %3 1
+%6 = OpConstant %3 5
 %1 = OpFunction %2 None %5
 %7 = OpLabel
 OpControlBarrier %6 %6 %4
@@ -920,7 +920,7 @@ OpExecutionMode %1 OriginUpperLeft
 %3 = OpTypeInt 32 0
 %4 = OpConstant %3 16
 %5 = OpTypeFunction %2
-%6 = OpConstant %3 1
+%6 = OpConstant %3 5
 %1 = OpFunction %2 None %5
 %7 = OpLabel
 OpMemoryBarrier %6 %4
@@ -1223,6 +1223,60 @@ OpFunctionEnd
 
   CompileSuccessfully(spirv);
   EXPECT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateBarriers, VulkanMemoryModelDeviceScopeBad) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability VulkanMemoryModelKHR
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint Fragment %func "func"
+OpExecutionMode %func OriginUpperLeft
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%device = OpConstant %int 1
+%semantics = OpConstant %int 0
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%1 = OpLabel
+OpMemoryBarrier %device %semantics
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("Use of device scope with VulkanKHR memory model requires the "
+                "VulkanMemoryModelDeviceScopeKHR capability"));
+}
+
+TEST_F(ValidateBarriers, VulkanMemoryModelDeviceScopeGood) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability VulkanMemoryModelKHR
+OpCapability VulkanMemoryModelDeviceScopeKHR
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint Fragment %func "func"
+OpExecutionMode %func OriginUpperLeft
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%device = OpConstant %int 1
+%semantics = OpConstant %int 0
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%1 = OpLabel
+OpMemoryBarrier %device %semantics
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
 }
 
 }  // namespace

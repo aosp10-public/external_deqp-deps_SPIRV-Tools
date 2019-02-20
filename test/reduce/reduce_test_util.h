@@ -56,6 +56,14 @@ void CheckEqual(spv_target_env env, const std::string& expected_text,
 void CheckEqual(spv_target_env env, const std::string& expected_text,
                 const opt::IRContext* actual_ir);
 
+// Assembles the given IR context and checks whether the resulting binary is
+// valid.
+void CheckValid(spv_target_env env, const opt::IRContext* ir);
+
+// Assembles the given IR context, then returns its disassembly as a string.
+// Useful for debugging.
+std::string ToString(spv_target_env env, const opt::IRContext* ir);
+
 // Assembly options for writing reduction tests.  It simplifies matters if
 // numeric ids do not change.
 const uint32_t kReduceAssembleOption =
@@ -63,6 +71,10 @@ const uint32_t kReduceAssembleOption =
 // Disassembly options for writing reduction tests.
 const uint32_t kReduceDisassembleOption =
     SPV_BINARY_TO_TEXT_OPTION_NO_HEADER | SPV_BINARY_TO_TEXT_OPTION_INDENT;
+
+// Don't print reducer info during testing.
+void NopDiagnostic(spv_message_level_t /*level*/, const char* /*source*/,
+                   const spv_position_t& /*position*/, const char* /*message*/);
 
 }  // namespace reduce
 }  // namespace spvtools
