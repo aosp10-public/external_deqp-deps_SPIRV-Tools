@@ -208,6 +208,10 @@ ValidationState_t::ValidationState_t(const spv_const_context ctx,
                    /* diagnostic = */ nullptr);
     preallocateStorage();
   }
+
+  friendly_mapper_ = spvtools::MakeUnique<spvtools::FriendlyNameMapper>(
+      context_, words_, num_words_);
+  name_mapper_ = friendly_mapper_->GetNameMapper();
 }
 
 void ValidationState_t::preallocateStorage() {
@@ -239,21 +243,10 @@ void ValidationState_t::AssignNameToId(uint32_t id, std::string name) {
 }
 
 std::string ValidationState_t::getIdName(uint32_t id) const {
-  std::stringstream out;
-  out << id;
-  if (operand_names_.find(id) != end(operand_names_)) {
-    out << "[" << operand_names_.at(id) << "]";
-  }
-  return out.str();
-}
+  const std::string id_name = name_mapper_(id);
 
-std::string ValidationState_t::getIdOrName(uint32_t id) const {
   std::stringstream out;
-  if (operand_names_.find(id) != std::end(operand_names_)) {
-    out << operand_names_.at(id);
-  } else {
-    out << id;
-  }
+  out << id << "[%" << id_name << "]";
   return out.str();
 }
 
@@ -926,6 +919,39 @@ void ValidationState_t::ComputeFunctionToEntryPointMapping() {
   }
 }
 
+void ValidationState_t::ComputeRecursiveEntryPoints() {
+  for (const Function func : functions()) {
+    std::stack<uint32_t> call_stack;
+    std::set<uint32_t> visited;
+
+    for (const uint32_t new_call : func.function_call_targets()) {
+      call_stack.push(new_call);
+    }
+
+    while (!call_stack.empty()) {
+      const uint32_t called_func_id = call_stack.top();
+      call_stack.pop();
+
+      if (!visited.insert(called_func_id).second) continue;
+
+      if (called_func_id == func.id()) {
+        for (const uint32_t entry_point :
+             function_to_entry_points_[called_func_id])
+          recursive_entry_points_.insert(entry_point);
+        break;
+      }
+
+      const Function* called_func = function(called_func_id);
+      if (called_func) {
+        // Other checks should error out on this invalid SPIR-V.
+        for (const uint32_t new_call : called_func->function_call_targets()) {
+          call_stack.push(new_call);
+        }
+      }
+    }
+  }
+}
+
 const std::vector<uint32_t>& ValidationState_t::FunctionEntryPoints(
     uint32_t func) const {
   auto iter = function_to_entry_points_.find(func);
@@ -934,6 +960,34 @@ const std::vector<uint32_t>& ValidationState_t::FunctionEntryPoints(
   } else {
     return iter->second;
   }
+}
+
+std::set<uint32_t> ValidationState_t::EntryPointReferences(uint32_t id) const {
+  std::set<uint32_t> referenced_entry_points;
+  const auto inst = FindDef(id);
+  if (!inst) return referenced_entry_points;
+
+  std::vector<const Instruction*> stack;
+  stack.push_back(inst);
+  while (!stack.empty()) {
+    const auto current_inst = stack.back();
+    stack.pop_back();
+
+    if (const auto func = current_inst->function()) {
+      // Instruction lives in a function, we can stop searching.
+      const auto function_entry_points = FunctionEntryPoints(func->id());
+      referenced_entry_points.insert(function_entry_points.begin(),
+                                     function_entry_points.end());
+    } else {
+      // Instruction is in the global scope, keep searching its uses.
+      for (auto pair : current_inst->uses()) {
+        const auto next_inst = pair.first;
+        stack.push_back(next_inst);
+      }
+    }
+  }
+
+  return referenced_entry_points;
 }
 
 std::string ValidationState_t::Disassemble(const Instruction& inst) const {
